@@ -1,5 +1,5 @@
 // Use an integer for version numbers — bump on every change
-version = 3
+version = 4
 
 cloudstream {
     description = "Riller — multi-source movie & series scrapers"
@@ -7,8 +7,10 @@ cloudstream {
 
     /**
      * 0: Down, 1: Ok, 2: Slow, 3: Beta-only
+     * NOTE: status 0 (Down) makes the app unload/refuse to load the plugin entirely
+     * (PluginManager: isDisabled = status == PROVIDER_STATUS_DOWN) — must be >= 1.
      */
-    status = 0 // flip to 1 once at least one source returns playable links
+    status = 1
 
     tvTypes = listOf("Movie", "TvSeries")
     language = "en"
