@@ -1,0 +1,8 @@
+{
+    "name": "Riller",
+    "description": "Riller — multi-source movie & series scrapers",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/SilverOnSmoke/Riller/builds/plugins.json"
+    ]
+}

@@ -1,0 +1,22 @@
+[
+    {
+        "fileHash": "sha256-e45bfde3706d16260c454a6483e32477566021084f299a1c35537f08f300751e",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/SilverOnSmoke/Riller",
+        "fileSize": 36742,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "riller"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 10,
+        "internalName": "Riller",
+        "description": "Riller \u2014 multi-source movie & series scrapers",
+        "url": "https://raw.githubusercontent.com/SilverOnSmoke/Riller/builds/Riller.cs3",
+        "name": "Riller"
+    }
+]
