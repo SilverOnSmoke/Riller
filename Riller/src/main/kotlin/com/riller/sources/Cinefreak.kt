@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.apmap
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
@@ -80,10 +79,10 @@ class Cinefreak : RillerSource("Cinefreak", "https://cinefreak.net/", TvType.Mov
     ): Boolean {
         val fPages = tryParseJson<CfData>(data)?.links.orEmpty()
 
-        val links = fPages.apmap { fUrl ->
+        val links = fPages.mapNotNull { fUrl ->
             runCatching {
                 val page = app.get(fUrl, headers = headers).text
-                val link = R2_REGEX.find(page)?.value ?: return@apmap null
+                val link = R2_REGEX.find(page)?.value ?: return@mapNotNull null
                 val rawName = link.substringAfterLast('/')
                 val filename = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
                 newExtractorLink(
@@ -95,7 +94,7 @@ class Cinefreak : RillerSource("Cinefreak", "https://cinefreak.net/", TvType.Mov
                     this.quality = qualityFromName(filename)
                 }
             }.getOrNull()
-        }.filterNotNull().sortedByDescending { it.quality }
+        }.sortedByDescending { it.quality }
 
         links.forEach(callback)
         return links.isNotEmpty()
