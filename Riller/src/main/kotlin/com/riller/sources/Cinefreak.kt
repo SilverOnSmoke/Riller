@@ -13,7 +13,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.riller.core.RillerSource
-import java.net.URLDecoder
 
 class Cinefreak : RillerSource("Cinefreak", "https://cinefreak.net/", TvType.Movie) {
 
@@ -81,17 +80,23 @@ class Cinefreak : RillerSource("Cinefreak", "https://cinefreak.net/", TvType.Mov
 
         val links = fPages.mapNotNull { fUrl ->
             runCatching {
-                val page = app.get(fUrl, headers = headers).text
-                val link = R2_REGEX.find(page)?.value ?: return@mapNotNull null
-                val rawName = link.substringAfterLast('/')
-                val filename = runCatching { URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
+                // The /f/ page no longer embeds the media link; the /w/ twin
+                // (same token) carries a signed direct video URL.
+                val page = app.get(fUrl.replace("/f/", "/w/"), headers = headers)
+                val doc = page.document
+                val link = doc.selectFirst("a.instant-download")?.attr("abs:href")?.takeIf { it.startsWith("http") }
+                    ?: R2_REGEX.find(page.text)?.value
+                    ?: return@mapNotNull null
+                val name = doc.selectFirst("h1.file-title")?.text()
+                    ?: doc.selectFirst("title")?.text()
+                    ?: "Cinefreak"
                 newExtractorLink(
                     source = "Cinefreak",
-                    name = filename,
+                    name = name,
                     url = link,
                     type = ExtractorLinkType.VIDEO, // direct file, no further resolution
                 ) {
-                    this.quality = qualityFromName(filename)
+                    this.quality = qualityFromName(name)
                 }
             }.getOrNull()
         }.sortedByDescending { it.quality }
