@@ -158,8 +158,8 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
                     when {
                         "hubcloud." in mirror.url -> resolveHubcloud(mirror.url)
                         "hubdrive." in mirror.url -> resolveHubdrive(mirror.url)
-                        else -> validatePlaybackUrl(mirror.url)
-                            ?.let { listOf(Candidate(it, mirror.label)) }
+                        // greenmotors-family ad wrapper hides the real resolver url
+                        else -> resolveWrapped(mirror.url)
                     }
                 }.getOrNull() ?: emptyList()
                 for (candidate in candidates) {
@@ -258,6 +258,72 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
         if (!ok) throw ErrorLoadingException("4KHDHub: not a hubcloud drive url")
     }
 
+    // greenmotors-family ad wrapper: the ?id= page carries an obfuscated blob
+    // (base64 → base64 → rot13 → base64 → flat JSON). "o" is the real target
+    // (often itself base64), "l" is the ad decoy, {data,blog_url} is an unlock
+    // variant whose target is the body of blog_url?re=data. Port of the funnel
+    // used by other CS3 providers (JustPlayNet.decryptIdLink).
+    private suspend fun resolveWrapped(wrapUrl: String): List<Candidate> {
+        val target = decryptIdLink(wrapUrl) ?: return emptyList()
+        return when {
+            "hubcloud." in target -> resolveHubcloud(target)
+            "hubdrive." in target -> resolveHubdrive(target)
+            else -> validatePlaybackUrl(target)?.let { listOf(Candidate(it, "Direct")) }
+                ?: emptyList()
+        }
+    }
+
+    private suspend fun decryptIdLink(url: String): String? {
+        val text = app.get(url, headers = headers).text
+        val concat = (BLOB_REGEX.findAll(text) + WP_BLOB_REGEX.findAll(text))
+            .joinToString("") { it.groupValues[1] }
+        if (concat.isEmpty()) return null
+        val decoded = runCatching {
+            val inner = String(
+                android.util.Base64.decode(
+                    android.util.Base64.decode(concat, B64_FLAGS),
+                    B64_FLAGS
+                ),
+                Charsets.ISO_8859_1
+            )
+            String(android.util.Base64.decode(rot13(inner), B64_FLAGS), Charsets.UTF_8)
+        }.getOrNull() ?: return null
+        val json = decoded.replace("\\/", "/")
+
+        // unlock variant: the wrapper wants a round-trip through its blog page
+        val blog = jsonField(json, "blog_url")
+        val data = jsonField(json, "data")
+        if (blog != null && data != null && blog.startsWith("http")) {
+            val res = runCatching {
+                app.get("$blog?re=$data", headers = headers, allowRedirects = false)
+            }.getOrNull() ?: return null
+            return res.document.body().text().trim().takeIf { it.startsWith("http") }
+        }
+
+        val target = jsonField(json, "o").takeIf { !it.isNullOrBlank() }
+            ?: jsonField(json, "l")?.takeIf { it.startsWith("http") }
+            ?: return null
+        val url = if (target.startsWith("http")) target
+        else runCatching {
+            String(android.util.Base64.decode(target, B64_FLAGS), Charsets.UTF_8)
+        }.getOrNull() ?: return null
+        return url.trim().takeIf { it.startsWith("http") }
+    }
+
+    private fun rot13(value: String): String = buildString {
+        for (c in value) append(
+            when (c) {
+                in 'a'..'z' -> 'a' + (c - 'a' + 13) % 26
+                in 'A'..'Z' -> 'A' + (c - 'A' + 13) % 26
+                else -> c
+            }
+        )
+    }
+
+    // value of "key":"..." in a flat wrapper JSON (already \/ -unescaped)
+    private fun jsonField(json: String, key: String): String? =
+        Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"").find(json)?.groupValues?.get(1)
+
     private fun extractPixeldrainUrls(html: String): List<String> {
         val urls = mutableListOf<String>()
         for (prefix in PIXELDRAIN_PREFIXES) {
@@ -314,15 +380,21 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
         )
         var (finalUrl, type) = probe(url, probeHeaders) ?: return null
         if (isWrapperType(type)) {
-            val wrapped = runCatching { URI(finalUrl) }.getOrNull()
+            // some wrappers put the raw target in ?link= unencoded (raw google
+            // urls contain '+' that URLDecoder would turn into spaces), some
+            // percent-encode it — try the raw value first, decoded second
+            val linkValue = runCatching { URI(finalUrl) }.getOrNull()
                 ?.rawQuery?.split('&')
                 ?.mapNotNull { param ->
                     val i = param.indexOf('=')
                     if (i <= 0) null else param.substring(0, i) to param.substring(i + 1)
                 }
-                ?.firstOrNull { it.first == "link" }
-                ?.second?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() }
-                ?.takeIf { it.startsWith("https://") }
+                ?.firstOrNull { it.first == "link" }?.second
+                ?: return null
+            val wrapped = listOfNotNull(
+                linkValue,
+                linkValue?.let { runCatching { URLDecoder.decode(it, "UTF-8") }.getOrNull() },
+            ).firstOrNull { it.startsWith("https://") && validatePlaybackUrl(it) != null }
                 ?: return null
             val second = probe(wrapped, probeHeaders) ?: return null
             finalUrl = second.first
@@ -348,14 +420,31 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
 
     // Port of hubcloud.rs validate_playback_url. IP-literal hosts only — no DNS
     // resolve (same as Rust). ponytail: IPv6 gets a prefix check, not full is_public_ip.
+    // The site emits hrefs with spaces/brackets that Rust's Url::parse auto-encoded;
+    // Java's URI rejects them, so percent-encode the illegal set first and hand the
+    // encoded form downstream.
     private fun validatePlaybackUrl(raw: String): String? {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+        val encoded = encodeUnsafeUrlChars(raw.trim())
+        val uri = runCatching { URI(encoded) }.getOrNull() ?: return null
         if (uri.scheme != "https") return null
         val host = uri.host?.lowercase() ?: return null
         val path = (uri.path ?: "").lowercase()
         if (host == "localhost" || host.endsWith(".local") || isPrivateIpLiteral(host)) return null
         if (path.endsWith(".zip") || "login.php" in path || "logout" in path) return null
-        return raw
+        return encoded
+    }
+
+    private fun encodeUnsafeUrlChars(url: String): String = buildString {
+        for (c in url) {
+            when {
+                c.code in 0x21..0x7e && c !in "[]<>\\^`{}|\"" -> append(c)
+                c == ' ' -> append("%20")
+                c.code > 0x7e -> for (b in c.toString().toByteArray(Charsets.UTF_8)) {
+                    append("%02X".format(b.toInt() and 0xFF))
+                }
+                else -> append("%${"%02X".format(c.code)}")
+            }
+        }
     }
 
     private fun isPrivateIpLiteral(host: String): Boolean {
@@ -420,6 +509,10 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
         val SE_EP_REGEX = Regex("""(?i)S(\d+)E(\d+)""")
         val NUM_REGEX = Regex("""\d+(?:\.\d+)?""")
         val PIXELDRAIN_ID = Regex("""[A-Za-z0-9_-]+""")
+        // greenmotors-family wrapper blobs: s('o','B64') or ck('_wp_http_N','B64')
+        val BLOB_REGEX = Regex("""s\('o','([A-Za-z0-9+/=]+)'""")
+        val WP_BLOB_REGEX = Regex("""ck\('_wp_http_\d+','([^']+)'""")
+        const val B64_FLAGS = android.util.Base64.DEFAULT
         val PIXELDRAIN_PREFIXES = listOf(
             "https://pixeldrain.dev/u/",
             "https://pixeldrain.com/u/",
