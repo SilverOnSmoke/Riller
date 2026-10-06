@@ -2,6 +2,8 @@ package com.riller.sources
 
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -71,19 +73,18 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
         val description = doc.select(".content-section p.mt-4")
             .firstNotNullOfOrNull { it.text().trim().takeIf(String::isNotEmpty) }
             ?: doc.selectFirst("meta[name=description]")?.attr("content")?.trim()
-        val rating = doc.select(".imdb-score")
+        val imdb = doc.select(".imdb-score")
             .firstNotNullOfOrNull { it.text().trim().takeIf(String::isNotEmpty) }
-            ?.let { NUM_REGEX.find(it)?.value }
-            ?.toDoubleOrNull()?.times(1000)?.toInt()
+            ?.let { Score.from(NUM_REGEX.find(it)?.value, 10) }
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
             ?.takeIf(String::isNotBlank)
-        val year = metadata(doc, "Release:")?.let(::firstFourDigitYear)
-            ?: metadata(doc, "Last Air:")?.let(::firstFourDigitYear)
+        val year = doc.metadata("Release:")?.let(::firstFourDigitYear)
+            ?: doc.metadata("Last Air:")?.let(::firstFourDigitYear)
             ?: firstFourDigitYear(rawTitle)
         val genres = doc.select(".badge-outline a")
             .mapNotNull { it.text().trim().takeIf(String::isNotEmpty) }
             .filter { it.lowercase() in GENRES }
-        val stars = metadata(doc, "Stars:")
+        val stars = doc.metadata("Stars:")
             ?.split(",")?.mapNotNull { it.trim().takeIf(String::isNotEmpty) }
 
         if (isSeries) {
@@ -95,12 +96,18 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
                         ?: return@mapNotNull null
                     val season = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
                     val episode = m.groupValues[2].toIntOrNull() ?: return@mapNotNull null
-                    // fix = false: data is "path|s|e", not a url — the plain String
+                    // fix = false: data is "path|s|e", not a url — the String
                     // overload would run fixUrl over it and corrupt the format.
-                    newEpisode(url = "$path|$season|$episode", fix = false) {
-                        this.season = season
-                        this.episode = episode
-                    }
+                    // initializer must be a named arg: it isn't the overload's
+                    // last parameter, so a trailing lambda can't bind to it.
+                    newEpisode(
+                        url = "$path|$season|$episode",
+                        fix = false,
+                        initializer = {
+                            this.season = season
+                            this.episode = episode
+                        },
+                    )
                 }
                 .distinctBy { "${it.season}:${it.episode}" }
                 .sortedWith(compareBy({ it.season }, { it.episode }))
@@ -108,7 +115,7 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
                 posterUrl = poster
                 plot = description
                 this.year = year
-                this.rating = rating
+                score = imdb
                 tags = genres.ifEmpty { null }
                 addActors(stars)
             }
@@ -117,7 +124,7 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
             posterUrl = poster
             plot = description
             this.year = year
-            this.rating = rating
+            score = imdb
             tags = genres.ifEmpty { null }
             addActors(stars)
         }
@@ -334,9 +341,8 @@ class FourKHdHub : RillerSource("4KHDHub", "https://4khdhub.one/", TvType.Movie,
         if (!res.isSuccessful) return null
         val finalUrl = res.url.toString()
         if (validatePlaybackUrl(finalUrl) == null) return null
-        val contentType = res.headers.entries
-            .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
-            ?.value?.lowercase().orEmpty()
+        // okhttp3.Headers.get is case-insensitive
+        val contentType = res.headers["Content-Type"]?.lowercase().orEmpty()
         return finalUrl to contentType
     }
 

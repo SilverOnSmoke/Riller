@@ -1,5 +1,5 @@
 // Use an integer for version numbers — bump on every change
-version = 8
+version = 9
 
 cloudstream {
     description = "Riller — multi-source movie & series scrapers"
